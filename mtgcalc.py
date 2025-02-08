@@ -1,6 +1,7 @@
 from collections import namedtuple, Counter
 from urllib.parse import quote as urlquote
 from pathlib import Path
+import csv
 import operator
 import random
 import sqlite3
@@ -10,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 import rich
 import requests
+from Levenshtein import distance
 
 HOST = "https://api.scryfall.com"
 DEFAULT_HEADERS = {"User-agent": "MTGCalculator/0.1"}
@@ -53,7 +55,9 @@ class CardReview(
 
 
 class Card(
-    namedtuple("Card", ("name", "rarity", "prices", "mana_cost", "type_line")),
+    namedtuple(
+        "Card", ("name", "rarity", "prices", "mana_cost", "type_line", "rating")
+    ),
     Record,
 ):
     @property
@@ -85,9 +89,6 @@ class Scry:
         }
 
         pager = requests.get(url, params).json()
-        import pdb
-
-        pdb.set_trace()
         while True:
             cards.extend(pager["data"])
             if not pager.get("has_more"):
@@ -216,6 +217,15 @@ class SetReview:
         self.cards = {}
 
     @classmethod
+    def parse_csv(cls, review_path):
+        cards = []
+        with Path(review_path).open() as fh:
+            reader = csv.reader(fh)
+            for row in reader:
+                cards.append({"name": row[0], "rating": row[1]})
+        return cards
+
+    @classmethod
     def parse(cls, review_path):
         text = Path(review_path).read_text()
         cards = []
@@ -238,13 +248,9 @@ class SetReview:
                         cards.append(card)
                     number, name, rating = l.split("-", 2)
                     if name.lower().startswith("mana"):
-                        import pdb
-
-                        pdb.set_trace()
+                        pass
                     elif name.lower().isdigit():
-                        import pdb
-
-                        pdb.set_trace()
+                        pass
                     card = {
                         "number": number.strip(),
                         "name": name.strip(),
@@ -258,40 +264,87 @@ class SetReview:
 
 @cli.command()
 @click.option("--set-review", required=True, type=click.Path())
-def cheatsheet(set_review):
-    reviews = SetReview.parse(set_review)
-    import pdb
+@click.option("--set-code", required=True)
+@click.option("--output", default="-", type=click.File("w"))
+def cheatsheet(set_review, set_code, output):
+    if set_review.endswith("csv"):
+        reviews = SetReview.parse_csv(set_review)
+    elif set_review.endswith(".txt"):
+        reviews = SetReview.parse(set_review)
+    else:
+        print("unknown review format")
+        return
 
-    pdb.set_trace()
-
-    cards = Scry().get_set_cards("dsk")
+    cards = Scry().get_set_cards(set_code)
     named = {c.name.lower(): c for c in cards}
 
     not_found = []
     found = 0
     reviewed = {c["name"]: c for c in reviews}
-    for card_name in reviewed:
+    for card_name in list(reviewed):
         card = reviewed[card_name]
         if card_name.lower() in named:
             found += 1
         else:
-            not_found.append(card)
+            found_typo = False
+            for n in named:
+                if distance(card_name, n) <= 4:
+                    reviewed[n] = reviewed[card_name]
+                    found_typo = True
+            if not found_typo:
+                not_found.append(card)
 
     print(f"found: {found} not_found: {len(not_found)}")
-    for c in sorted(not_found, key=operator.itemgetter("name")):
-        print(repr(c["name"]))
+    # debug print not found
+    # for c in sorted(not_found, key=operator.itemgetter("name")):
+    #    print(repr(c["name"]))
 
-    #    for c in sorted(reviewed.items(), key=operator.attrgetter('name')):
-    #        print(repr(c['name']))
+    for card_name in list(reviewed):
+        card = reviewed[card_name]
+        if card_name.lower() in named:
+            named[card_name.lower()] = named[card_name.lower()]._replace(
+                rating=reviewed[card_name]["rating"]
+            )
 
-    import pdb
+    # group the cards by color, multi-color, artifact, land
+    grouped_cards = group_sheet(named)
 
-    pdb.set_trace()
+    writer = csv.writer(output)
+    for color in ("Black", "Blue", "Green", "Red", "White", "Multi", "Lands"):
+        card_set = grouped_cards[color]
+        writer.writerow((color,))
+        for card in card_set:
+            writer.writerow((card.name, card.rating, card.rarity))
+        writer.writerow(("",))
 
-    # import pprint
-    # pprint.pprint(reviews)
-    print(len(reviews))
-    print(len(cards))
+
+def group_sheet(cards):
+    color_map = {"B": "Black", "G": "Green", "W": "White", "U": "Blue", "R": "Red"}
+    grouped = {}
+
+    for name in cards:
+        card = cards[name]
+        if card.mana_cost == "":
+            grouped.setdefault("Lands", []).append(card)
+            continue
+
+        multi = False
+        color = ""
+        for c in color_map:
+            if c in card.mana_cost:
+                if color:
+                    multi = True
+                else:
+                    color = c
+
+        if multi:
+            grouped.setdefault("Multi", []).append(card)
+            continue
+
+        if color:
+            grouped.setdefault(color_map[color], []).append(card)
+
+    return grouped
 
 
 @cli.command()

@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "mtgcalc"
+version = "0.1.0"
+description = "magic the gathering utilities"
+authors = ["Kapil Thangavelu <kapilt@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+click = "^8.1.8"
+rich = "^13.9.4"
+requests = "^2.32.3"
+levenshtein = "^0.26.1"
+
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.9.5"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

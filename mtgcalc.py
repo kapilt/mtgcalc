@@ -56,17 +56,34 @@ class CardReview(
 
 class Card(
     namedtuple(
-        "Card", ("name", "rarity", "prices", "mana_cost", "type_line", "rating")
+        "Card", ("name", "rarity", "prices", "mana_cost", "type_line", "rating", "set")
     ),
     Record,
 ):
+    @classmethod
+    def make(cls, rec_dict):
+        # handle special guests flavor names
+        if "flavor_name" in rec_dict:
+            print("%s -> %s" % (rec_dict["name"], rec_dict["flavor_name"]))
+            rec_dict["name"] = rec_dict["flavor_name"]
+        # handle cards that flip
+        if "mana_cost" not in rec_dict and "card_faces" in rec_dict:
+            cards = []
+            for face in rec_dict["card_faces"]:
+                face_dict = dict(rec_dict)
+                face_dict["name"] = face["name"]
+                face_dict["mana_cost"] = face["mana_cost"]
+                cards.append(face_dict)
+            return list(map(super().make, cards))
+        return [super().make(rec_dict)]
+
     @property
     def type(self):
         return self.type_line.split(" ")[0]
 
     @property
     def price(self):
-        return self.prices["usd"] or self.prices["usd_foil"]
+        return self.prices["usd"] or self.prices["usd_foil"] or 0
 
 
 class Scry:
@@ -77,7 +94,14 @@ class Scry:
         sets = requests.get(HOST + "/sets/").json()
         return list(map(Set.make, sets.get("data")))
 
-    def get_set_cards(self, set_code):
+    def get_set_cards(self, *set_codes):
+        cards = []
+        for set_code in set_codes:
+            if set_code:
+                cards.extend(self._get_set_cards(set_code))
+        return cards
+
+    def _get_set_cards(self, set_code):
         cards = []
         url = HOST + f"/cards/search"
         params = {
@@ -103,7 +127,10 @@ class Scry:
         #            )
         #        )]
 
-        return list(map(Card.make, cards))
+        results = []
+        for c in cards:
+            results.extend(Card.make(c))
+        return results
 
 
 def get_set_rarity(cards):
@@ -265,8 +292,9 @@ class SetReview:
 @cli.command()
 @click.option("--set-review", required=True, type=click.Path())
 @click.option("--set-code", required=True)
+@click.option("--spg-code")
 @click.option("--output", default="-", type=click.File("w"))
-def cheatsheet(set_review, set_code, output):
+def cheatsheet(set_review, set_code, output, spg_code=None):
     if set_review.endswith("csv"):
         reviews = SetReview.parse_csv(set_review)
     elif set_review.endswith(".txt"):
@@ -275,16 +303,24 @@ def cheatsheet(set_review, set_code, output):
         print("unknown review format")
         return
 
-    cards = Scry().get_set_cards(set_code)
+    cards = Scry().get_set_cards(set_code, spg_code)
+    print("Reviewed in set %d" % len(reviews))
+    print("Cards in set %d" % len(cards))
     named = {c.name.lower(): c for c in cards}
 
+    # handle flip cards
+    for n in list(named):
+        if "//" in n:
+            first_face = n.split("//")[0].strip()
+            named[first_face] = named[n]
+
     not_found = []
-    found = 0
+    found = []
     reviewed = {c["name"]: c for c in reviews}
     for card_name in list(reviewed):
         card = reviewed[card_name]
         if card_name.lower() in named:
-            found += 1
+            found.append(card)
         else:
             found_typo = False
             for n in named:
@@ -294,10 +330,13 @@ def cheatsheet(set_review, set_code, output):
             if not found_typo:
                 not_found.append(card)
 
-    print(f"found: {found} not_found: {len(not_found)}")
+    print(f"found: {len(found)} not_found: {len(not_found)}")
+    import pdb
+
+    pdb.set_trace()
     # debug print not found
-    # for c in sorted(not_found, key=operator.itemgetter("name")):
-    #    print(repr(c["name"]))
+    for c in sorted(not_found, key=operator.itemgetter("name")):
+        print(repr(c["name"]))
 
     for card_name in list(reviewed):
         card = reviewed[card_name]
@@ -313,7 +352,7 @@ def cheatsheet(set_review, set_code, output):
     for color in ("Black", "Blue", "Green", "Red", "White", "Multi", "Lands"):
         card_set = grouped_cards[color]
         writer.writerow((color,))
-        for card in card_set:
+        for card in sorted(card_set, key=operator.attrgetter("name")):
             writer.writerow((card.name, card.rating, card.rarity))
         writer.writerow(("",))
 
